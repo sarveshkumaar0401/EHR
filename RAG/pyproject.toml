@@ -1,0 +1,23 @@
+[project]
+name = "rag"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.128.0",
+    "datasets>=4.0.0",
+    "google-genai>=1.0.0",
+    "google-generativeai>=0.8.6",
+    "inngest[fastapi]>=0.5.13",
+    "langchain-text-splitters",
+    "llama-index-core>=0.14.12",
+    "llama-index-readers-file>=0.5.6",
+    "neo4j>=6.0.0",
+    "openai>=2.15.0",
+    "python-dotenv>=1.2.1",
+    "qdrant-client>=1.16.2",
+    "sentence-transformers",
+    "streamlit>=1.52.2",
+    "uvicorn>=0.40.0",
+]

@@ -1,0 +1,23 @@
+# User-specific secrets
+.env
+**/.env
+
+# Requested exclusions
+/P_to_PDF/
+/Papers/
+
+# Local Python environments and generated caches
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Local vector database data
+/RAG/qdrant/
+/RAG/qdrant_aci_db/
+
+# Local editor and OS state
+.vscode/
+.DS_Store
+Thumbs.db
