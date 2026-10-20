@@ -58,11 +58,11 @@ Graph Traversal Rules:
 - To find recommended treatments for a disease: (d:Disease)-[:TREATED_BY]->(t:Treatment)
 
 IMPORTANT STRICT RULES:
-- The valid node labels are exactly: Disease, Symptom, Treatment, Anatomy, Trigger, Category. Do not invent others (e.g., never use Medication, Patient, or Condition).
-- The valid relationship types for medical conditions are exactly: [:HAS_SYMPTOM] and [:TREATED_BY]. Never invent edges.
-- Never use complex OR statements for labels. For example, use `t:Treatment`, not `t:Treatment OR t:Medication`.
+- Use only node labels and relationship types present in the provided schema. The graph includes both `Treatment` and `Medication` as separate labels; do not treat them as interchangeable.
+- For treatments, use the `Treatment` label with `TREATED_BY`. For medications, use the `Medication` label and the relationship and direction shown in the provided schema (including `HAS_TREATMENT` where applicable).
+- Never combine alternative labels with OR. Match a node with one label, such as `t:Treatment` or `m:Medication`, not `t:Treatment OR t:Medication`.
 - Always use `toLower()` when matching string names (e.g., `WHERE toLower(d.name) CONTAINS 'encephalitis'`), as the database properties are stored in lowercase.
-- Always use directional arrows based on the traversal rules above.database stores them in lowercase.
+- Always use directional arrows based on the traversal rules above; database properties are stored in lowercase.
 
 Question: {question}
 Cypher query:"""
@@ -172,9 +172,11 @@ def get_graph_context(question: str, medical_lookup: bool = False) -> str:
         WHERE any(term IN $terms WHERE toLower(d.name) = term OR toLower(d.name) CONTAINS term)
         OPTIONAL MATCH (d)-[:HAS_SYMPTOM]->(s:Symptom)
         OPTIONAL MATCH (d)-[:TREATED_BY]->(t:Treatment)
+        OPTIONAL MATCH (d)-[:HAS_TREATMENT]-(m:Medication)
         RETURN d.name AS disease,
                collect(DISTINCT s.name) AS symptoms,
-               collect(DISTINCT t.name) AS treatments
+               collect(DISTINCT t.name) AS treatments,
+               collect(DISTINCT m.name) AS medications
         ORDER BY disease
         LIMIT 50
         """
@@ -271,6 +273,15 @@ def classify_question(question: str) -> str:
     return "hybrid"
 
 
+def asks_about_treatment(question: str) -> bool:
+    """Return whether the question asks about treatment, medication, or therapy."""
+    return bool(re.search(
+        r"\b(treat(?:ment|ments|ing)?|therap(?:y|ies)|medications?|drugs?)\b",
+        question,
+        flags=re.IGNORECASE,
+    ))
+
+
 def asks_for_patient_context(question: str) -> bool:
     """Return whether the query asks for a person or patient-specific evidence."""
     return bool(re.search(
@@ -362,6 +373,7 @@ Answer the clinician's query using only the supplied knowledge graph and retriev
 
 Grounding rules:
 - Treat the knowledge graph, patient vector chunks, and medical vector chunks as the only sources of truth.
+- For treatment questions, prefer relevant Neo4j evidence; if Neo4j has no relevant result, rely on the medical dataset as the primary source.
 - If both vector retrieval and graph retrieval have useful evidence, combine them into one grounded summary.
 - If one source has no relevant answer, explicitly note that and rely on the source that does contain evidence.
 - If neither source contains relevant evidence, say "No relevant context was found in the vector database or graph database."
@@ -389,13 +401,21 @@ Clinical Assessment and Findings:"""
 # 7. Build the Sequential Hybrid Orchestrator
 def run_true_hybrid_rag(question: str):
     question_type = classify_question(question)
+    treatment_question = asks_about_treatment(question)
 
     if question_type == "graph":
         print("--- 1. Prioritizing Neo4j graph retrieval for disease/symptom/treatment question ---")
         graph_context = get_graph_context(question, medical_lookup=True)
         graph_has_answer = has_relevant_context(graph_context)
 
-        if not graph_has_answer or asks_for_patient_context(question):
+        if treatment_question:
+            print("--- 2. Checking the medical Qdrant collection for treatment evidence ---")
+            medical_context = get_vector_context(question, MEDICAL_COLLECTION)
+            if not graph_has_answer or asks_for_patient_context(question):
+                patient_context = get_vector_context(question, PATIENT_COLLECTION)
+            else:
+                patient_context = ""
+        elif not graph_has_answer or asks_for_patient_context(question):
             if graph_has_answer:
                 print("--- 2. Querying Qdrant for patient-specific evidence requested by the question ---")
             else:
@@ -431,7 +451,31 @@ def run_true_hybrid_rag(question: str):
     if question_type == "graph" and not graph_has_answer:
         graph_has_answer = False
 
-    if patient_has_answer or medical_has_answer or graph_has_answer:
+    if treatment_question and graph_has_answer:
+        if medical_has_answer:
+            source_status = (
+                "For this treatment question, Neo4j has relevant evidence and is the primary source. "
+                "Use the medical dataset as corroborating or supplementary evidence; if they conflict, "
+                "prefer Neo4j. Patient context, if present, is only for patient-specific reported facts."
+            )
+        else:
+            source_status = (
+                "Neo4j has relevant treatment evidence and is the primary source. "
+                "The medical dataset did not return a relevant match. "
+                "Patient context, if present, is only for patient-specific reported facts."
+            )
+    elif treatment_question and medical_has_answer:
+        source_status = (
+            "Neo4j returned no relevant treatment evidence. Give the medical dataset full weight as "
+            "the primary source for this treatment answer. Patient context, if present, is only for "
+            "patient-specific reported facts."
+        )
+    elif treatment_question and patient_has_answer:
+        source_status = (
+            "Neither Neo4j nor the medical dataset returned relevant treatment evidence. "
+            "Use patient context only for explicitly reported patient-specific facts."
+        )
+    elif patient_has_answer or medical_has_answer or graph_has_answer:
         if patient_has_answer and medical_has_answer and graph_has_answer:
             source_status = "All three sources contained relevant evidence; combine the vector and graph answers into one grounded summary."
         elif patient_has_answer and graph_has_answer:
@@ -473,7 +517,7 @@ def run_true_hybrid_rag(question: str):
 # 8. Execute the Query
 if __name__ == "__main__":
     doctor_question = (
-        "History of Ms. Hernandez"
+        "How should an EHR outline the treatment plan for gestational high blood pressure, specifically regarding blood pressure monitoring, salt restriction, and potential antihypertensive medications?"
     )
 
     print("Starting Sequential Hybrid Retrieval...")
